@@ -13,37 +13,48 @@
     <header class="hero">
       <span class="eyebrow"><span class="dot"></span> Photo grabber</span>
       <h1 class="title">Aperture<span class="serif">.</span></h1>
-      <p class="lede">Pull every photo from a Facebook album at full resolution. No clutter, no extra steps.</p>
     </header>
 
-    <section class="status-card" id="statusCard">
-      <div class="status-card-inner">
-        <div class="status-row">
+    <section class="status" id="status">
+      <div class="status-inner">
+        <div class="status-head">
           <span class="status-dot" id="statusDot"></span>
-          <span class="status-text" id="statusText">Checking the active tab…</span>
+          <span class="status-text" id="statusText">Reading the active tab…</span>
         </div>
-        <p class="status-help" id="statusHelp">&nbsp;</p>
+        <div class="meta-grid">
+          <div class="meta-cell">
+            <span class="meta-label">Album</span>
+            <span class="meta-value" id="albumName">—</span>
+          </div>
+          <div class="meta-cell">
+            <span class="meta-label">Photos</span>
+            <span class="meta-value" id="photoCount">—</span>
+          </div>
+        </div>
       </div>
     </section>
 
     <button class="cta" id="ctaBtn" disabled>
-      <span class="cta-label" id="ctaLabel">Open on Facebook</span>
-      <span class="cta-arrow">
+      <span class="cta-label" id="ctaLabel">Working…</span>
+      <span class="cta-arrow" id="ctaArrow">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M7 17 17 7"/>
-          <path d="M8 7h9v9"/>
+          <path d="M12 4v12"/><path d="m6 12 6 6 6-6"/><path d="M5 20h14"/>
         </svg>
       </span>
     </button>
 
-    <div class="meta">
-      <div class="meta-line"><span>Step 01</span><p>Open any Facebook album or photos tab.</p></div>
-      <div class="meta-line"><span>Step 02</span><p>Click the floating Aperture pill at the bottom-right.</p></div>
-      <div class="meta-line"><span>Step 03</span><p>Pick the photos you want, hit Download.</p></div>
+    <div class="progress" id="progressWrap">
+      <div class="progress-track"><div class="progress-bar" id="progressBar"></div></div>
+      <span class="progress-label" id="progressLabel">&nbsp;</span>
+    </div>
+
+    <div class="error-banner" id="errorBanner" hidden>
+      <span class="error-dot"></span>
+      <span id="errorText"></span>
     </div>
 
     <footer class="foot">
-      <span>v1.0</span>
+      <span>v1.1</span>
       <span class="dot-mini"></span>
       <span>Saves to <em>Downloads / Aperture</em></span>
     </footer>

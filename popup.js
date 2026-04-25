@@ -1,74 +1,188 @@
-// Aperture popup — checks the active tab and offers a one-tap entry point.
+// Aperture popup — drives scan + download via messages to the active tab's
+// content script. Lives entirely in the toolbar dialog.
 
 const $ = (id) => document.getElementById(id);
 
-const setStatus = (state, text, help) => {
-  const dot = $('statusDot');
-  dot.classList.remove('ok', 'warn');
-  if (state === 'ok') dot.classList.add('ok');
-  if (state === 'warn') dot.classList.add('warn');
-  $('statusText').textContent = text;
-  $('statusHelp').innerHTML = help || '&nbsp;';
+let activeTab = null;
+let pollTimer = null;
+
+const isFacebook = (url) => {
+  try { return /(^|\.)facebook\.com$/i.test(new URL(url).hostname); }
+  catch { return false; }
 };
 
-const isFacebookUrl = (url) => {
-  try {
-    const u = new URL(url);
-    return /(^|\.)facebook\.com$/i.test(u.hostname);
-  } catch (e) {
-    return false;
+const setDot = (state) => {
+  const d = $('statusDot');
+  d.classList.remove('ok', 'warn', 'busy');
+  if (state) d.classList.add(state);
+};
+
+const setError = (msg) => {
+  const b = $('errorBanner');
+  if (msg) {
+    b.hidden = false;
+    $('errorText').textContent = msg;
+  } else {
+    b.hidden = true;
   }
 };
 
-const looksLikePhotosPage = (url) => {
-  try {
-    const u = new URL(url);
-    return /\/photos\b|\/media\/set\b|\/photo(\.php)?\b|\bset=/.test(u.pathname + u.search);
-  } catch (e) {
-    return false;
-  }
+const setProgress = (frac, label, indeterminate = false) => {
+  const wrap = $('progressWrap');
+  const bar = $('progressBar');
+  if (label || indeterminate || frac > 0) wrap.classList.add('show');
+  else wrap.classList.remove('show');
+  wrap.classList.toggle('indeterminate', !!indeterminate);
+  if (!indeterminate) bar.style.transform = `scaleX(${Math.max(0, Math.min(1, frac))})`;
+  $('progressLabel').innerHTML = label || '&nbsp;';
 };
 
-const init = async () => {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+const setCTA = (label, { disabled = false, action = null } = {}) => {
+  $('ctaLabel').textContent = label;
+  $('ctaBtn').disabled = !!disabled;
+  $('ctaBtn').onclick = action;
+};
 
-  if (!tab || !tab.url) {
-    setStatus('warn', 'No active tab', 'Open a Facebook tab to get started.');
+const sendToTab = (type, payload) =>
+  new Promise((resolve) => {
+    if (!activeTab) return resolve(null);
+    chrome.tabs.sendMessage(activeTab.id, { type, payload }, (resp) => {
+      // chrome.runtime.lastError fires if no listener; ignore.
+      void chrome.runtime.lastError;
+      resolve(resp || null);
+    });
+  });
+
+const truncate = (s, n) => (s && s.length > n ? s.slice(0, n - 1) + '…' : s || '—');
+
+const renderState = (snap) => {
+  if (!snap) {
+    setDot('warn');
+    $('statusText').textContent = 'Page not responding yet.';
+    $('albumName').textContent = '—';
+    $('photoCount').textContent = '—';
+    setProgress(0, '');
+    setCTA('Reload page & retry', { disabled: false, action: () => {
+      if (activeTab) chrome.tabs.reload(activeTab.id);
+      window.close();
+    }});
     return;
   }
 
-  if (!isFacebookUrl(tab.url)) {
-    setStatus('warn', 'Not on Facebook',
-      'Aperture works on <em>facebook.com</em>. Open an album or photos tab and try again.');
-    $('ctaLabel').textContent = 'Open Facebook';
-    $('ctaBtn').disabled = false;
-    $('ctaBtn').addEventListener('click', () => {
-      chrome.tabs.create({ url: 'https://www.facebook.com/' });
-      window.close();
+  $('albumName').textContent = truncate(snap.albumName, 28);
+  $('photoCount').textContent = String(snap.photoCount || 0);
+  setError(snap.lastError || '');
+
+  if (snap.scanning) {
+    setDot('busy');
+    $('statusText').textContent = 'Scanning the album…';
+    setProgress(0, snap.progress?.label || 'Scanning…', true);
+    setCTA('Working…', { disabled: true });
+    return;
+  }
+
+  if (snap.downloading) {
+    setDot('busy');
+    $('statusText').textContent = 'Downloading photos…';
+    const frac = snap.progress?.total ? snap.progress.done / snap.progress.total : 0;
+    setProgress(frac, snap.progress?.label || 'Saving…');
+    setCTA('Saving…', { disabled: true });
+    return;
+  }
+
+  // Idle states
+  if (!snap.isPhotosPage) {
+    setDot('warn');
+    $('statusText').textContent = 'Open a Facebook album or photos tab.';
+    setProgress(0, '');
+    setCTA('Browse Facebook albums', {
+      disabled: false,
+      action: () => {
+        chrome.tabs.update(activeTab.id, { url: 'https://www.facebook.com/me/photos' });
+        window.close();
+      },
     });
     return;
   }
 
-  if (!looksLikePhotosPage(tab.url)) {
-    setStatus('ok', 'Connected to Facebook',
-      'Navigate to an <em>album</em> or the <em>Photos</em> tab — the Aperture pill will appear at the bottom-right.');
-    $('ctaLabel').textContent = 'Got it';
-    $('ctaBtn').disabled = false;
-    $('ctaBtn').addEventListener('click', () => window.close());
+  // On a photos page, idle.
+  setDot('ok');
+  if (snap.progress?.phase === 'done') {
+    $('statusText').textContent = `Saved ${snap.progress.done} photo${snap.progress.done === 1 ? '' : 's'}.`;
+    setProgress(1, snap.progress.label || 'Done');
+  } else if (snap.photoCount > 0) {
+    $('statusText').textContent = `Found ${snap.photoCount} photo${snap.photoCount === 1 ? '' : 's'}. Ready to save.`;
+    setProgress(0, '');
+  } else {
+    $('statusText').textContent = 'Photos page detected.';
+    setProgress(0, '');
+  }
+
+  setCTA(
+    snap.photoCount > 0 ? `Download ${snap.photoCount} photo${snap.photoCount === 1 ? '' : 's'}`
+                        : 'Scan & download album',
+    {
+      disabled: false,
+      action: async () => {
+        setCTA('Working…', { disabled: true });
+        setDot('busy');
+        setProgress(0, 'Starting…', true);
+        const resp = await sendToTab('APERTURE_DOWNLOAD_ALL');
+        if (!resp) {
+          setError('Could not reach the page. Try refreshing the Facebook tab and reopening Aperture.');
+          setDot('warn');
+        }
+        // Status will be polled and re-rendered.
+      },
+    }
+  );
+};
+
+const poll = async () => {
+  if (!activeTab) return;
+  const snap = await sendToTab('APERTURE_GET_STATUS');
+  renderState(snap);
+};
+
+const init = async () => {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  activeTab = tab;
+
+  if (!tab || !tab.url) {
+    setDot('warn');
+    $('statusText').textContent = 'No active tab.';
+    setCTA('Close', { disabled: false, action: () => window.close() });
     return;
   }
 
-  setStatus('ok', 'Album detected',
-    'Press the floating <em>Aperture</em> pill on the page to scan and download.');
-  $('ctaLabel').textContent = 'Focus the page';
-  $('ctaBtn').disabled = false;
-  $('ctaBtn').addEventListener('click', async () => {
-    try {
-      await chrome.tabs.update(tab.id, { active: true });
-      await chrome.windows.update(tab.windowId, { focused: true });
-    } catch (e) {}
-    window.close();
+  if (!isFacebook(tab.url)) {
+    setDot('warn');
+    $('statusText').textContent = 'Not on Facebook.';
+    $('albumName').textContent = '—';
+    $('photoCount').textContent = '—';
+    setCTA('Open Facebook', {
+      disabled: false,
+      action: () => {
+        chrome.tabs.create({ url: 'https://www.facebook.com/me/photos' });
+        window.close();
+      },
+    });
+    return;
+  }
+
+  // First poll — establishes whether the content script is responding.
+  await poll();
+
+  // Listen for live progress broadcasts from the content script.
+  chrome.runtime.onMessage.addListener((msg) => {
+    if (msg && msg.type === 'APERTURE_PROGRESS') {
+      renderState(msg.payload);
+    }
   });
+
+  // Light polling as a safety net.
+  pollTimer = setInterval(poll, 1200);
+  window.addEventListener('beforeunload', () => clearInterval(pollTimer));
 };
 
 init();
