@@ -3,3 +3,6 @@ node_modules/
 *.zip
 .idea/
 .vscode/
+
+# Local-only project notes
+handoff.md
